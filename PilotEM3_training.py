@@ -12,6 +12,18 @@ vis_deviant = visual.Circle(win, radius=0.3, fillColor='black')
 aud_standard = sound.Sound(value=440, secs=0.3)
 aud_deviant = sound.Sound(value=880, secs=0.3)
 
+# Generel velkomst og forklaring af forsøget
+velkomst_tekst = (
+    "VELKOMMEN TIL EKSPERIMENTET!\n\n"
+    "I dette forsøg undersøger vi, hvordan hjernen opfatter og forudsiger mønstre i lyd og billede.\n\n"
+    "Du vil blive præsenteret for en række visuelle figurer og toner. "
+    "Nogle gange vil de følge et fast 'Standard' mønster, og andre gange vil der forekomme en 'Afvigelse'.\n\n"
+    "Din opgave er at prøve at forudsige, om der kommer en 'Standard' eller en 'Afvigende' hændelse som det næste.\n\n"
+    "Tryk på MELLEMRUM for at læse instruktionerne til opgaven."
+)
+velkomst_skærm = visual.TextStim(win, text=velkomst_tekst, color='black', height=0.04, wrapWidth=1.2)
+
+
 # --- 2. LOGIK TIL SEKVENSER ---
 states = ['ss', 'av', 'sv', 'as']
 n_trials_per_block = 10 # Kort antal trials til øvelsen
@@ -84,12 +96,12 @@ def generate_dynamic_sequence(n_trials, allowed_deviants):
     return seq
 
 # --- 3. BLOK OPSÆTNING ---
-# Til øvelsen udvælger vi 4 repræsentative blokke, så de prøver lidt af hvert
+# 4 specifikke blokke: SV, AS, AV, og Mix. Skifter mellem statisk og dynamisk.
 practice_configs = [
-    {'type': 'static', 'deviants': ['av']},              # Simpel statisk
-    {'type': 'dynamic', 'deviants': ['sv']},             # Simpel dynamisk
-    {'type': 'static', 'deviants': ['av', 'sv', 'as']},  # Mikset statisk
-    {'type': 'dynamic', 'deviants': ['av', 'sv', 'as']}  # Mikset dynamisk
+    {'type': 'static',  'deviants': ['sv']},             # 1. Kun SV (Statisk)
+    {'type': 'dynamic', 'deviants': ['as']},             # 2. Kun AS (Dynamisk)
+    {'type': 'static',  'deviants': ['av']},             # 3. Kun AV (Statisk)
+    {'type': 'dynamic', 'deviants': ['av', 'sv', 'as']}  # 4. Mikset (Dynamisk)
 ]
 
 blocks = []
@@ -99,8 +111,7 @@ for i, config in enumerate(practice_configs):
     else:
         seq = generate_dynamic_sequence(n_trials_per_block, config['deviants'])
     
-    # Tydelig tekst om at det er en øvelse
-    inst_text = f"ØVELSE: BLOK {i+1} AF 4\n\nGæt næste hændelse!\nTryk 's' for Standard\nTryk 'k' for Deviant\n\nTryk på MELLEMRUM for at starte."
+    inst_text = f"ØVELSE: BLOK {i+1} AF 4\n\nGæt næste hændelse!\nTryk 's' for Standard\nTryk 'k' for Afvinde\n\nTryk på MELLEMRUM for at starte."
     instruction = visual.TextStim(win, text=inst_text, color='black', height=0.05)
     
     blocks.append({
@@ -112,10 +123,16 @@ for i, config in enumerate(practice_configs):
     })
 
 # --- 4. KØRSEL AF ØVELSEN ---
-eksperiment_data = [] # Vi gemmer det i hukommelsen for at printe accuracy til sidst
+# Vis den overordnede velkomstskærm først
+velkomst_skærm.draw()
+win.flip()
+event.waitKeys(keyList=['space', 'escape'])
+
+eksperiment_data = [] 
 trial_clock = core.Clock()
 
 for block in blocks:
+    # Herefter vises instruktionen for den specifikke blok
     block['instruction'].draw()
     win.flip()
     event.waitKeys(keyList=['space'])
@@ -153,7 +170,6 @@ for block in blocks:
         win.flip()
         core.wait(1.0) 
         
-        # Gem kun nok til at vi kan printe resultatet
         eksperiment_data.append({
             'block_num': block['block_num'],
             'correct': correct
@@ -162,7 +178,6 @@ for block in blocks:
 # --- 5. AFSLUTNING UDEN GEMNING ---
 win.close()
 
-# Print et hurtigt overblik i konsollen til forsøgslederen
 print("\n--- ØVELSE AFSLUTTET ---")
 print("Data er IKKE gemt som fil.\n")
 for block in blocks:

@@ -3,6 +3,7 @@ import numpy as np
 import random
 import csv
 from datetime import datetime
+import os
 
 # --- 0. START SKÆRM (DIALOG BOKS TIL ID) ---
 exp_info = {'Participant ID': ''}
@@ -26,24 +27,31 @@ aud_deviant = sound.Sound(value=880, secs=0.3)
 
 # --- 2. LOGIK TIL SEKVENSER ---
 states = ['ss', 'av', 'sv', 'as']
-n_trials_per_block = 50 # Fast antal trials for alle 24 blokke
+n_trials_per_block = 60
 
 def generate_static_sequence(n_trials, allowed_deviants):
     seq = []
     current = 'ss'
+    
     for _ in range(n_trials):
-        probs = [0.0, 0.0, 0.0, 0.0]
+        probs = np.zeros(len(states))
         
         if current == 'ss':
-            p_stay = 0.50
-            p_change = 0.50
-            probs[0] = p_stay
+            # Rolig baseline: 65% chance for at blive i 'ss'
+            p_stay = 0.65
+            p_change = 1.0 - p_stay
             
+            probs[states.index('ss')] = p_stay
             for dev in allowed_deviants:
-                idx = states.index(dev)
-                probs[idx] = p_change / len(allowed_deviants)
+                probs[states.index(dev)] = p_change / len(allowed_deviants)
         else:
-            probs[0] = 1.0 
+            # Høj suprisal-retur: 90% chance for at hoppe tilbage til 'ss'
+            p_stay = 0.10 
+            p_change = 1.0 - p_stay
+            
+            probs[states.index(current)] = p_stay
+            # Vi antager, at en afviger altid returnerer til 'ss', ikke direkte til en anden afviger
+            probs[states.index('ss')] = p_change 
             
         next_state = np.random.choice(states, p=probs)
         seq.append(next_state)
@@ -58,36 +66,35 @@ def generate_dynamic_sequence(n_trials, allowed_deviants):
     
     for _ in range(n_trials):
         streak += 1
-        probs = [0.0, 0.0, 0.0, 0.0]
+        probs = np.zeros(len(states))
         
         if current == 'ss':
-            change_probs = [0.40, 0.60, 0.80, 0.99]
+            # Starter med lav sandsynlighed for afvigelse, men bygger op. 
+            # Gennemsnittet på tværs af streaks vil ligge omkring de 35%.
+            change_probs = [0.15, 0.25, 0.45, 0.80]
             idx = min(streak - 1, 3) 
             p_change = change_probs[idx]
             p_stay = 1.0 - p_change
             
-            probs[0] = p_stay
+            probs[states.index('ss')] = p_stay
             for dev in allowed_deviants:
-                idx_state = states.index(dev)
-                probs[idx_state] = p_change / len(allowed_deviants)
+                probs[states.index(dev)] = p_change / len(allowed_deviants)
             
         else: 
-            change_probs = [0.80, 0.99]
+            # 85% chance for at hoppe tilbage til 'ss' i første hug. 
+            # Bliver den (mod forventning), tvinges den tilbage i næste trin (99%).
+            change_probs = [0.85, 0.99]
             idx = min(streak - 1, 1)
             p_change = change_probs[idx]
             p_stay = 1.0 - p_change
             
-            for i, s in enumerate(states):
-                if s == current:
-                    probs[i] = p_stay 
-                elif s == 'ss':
-                    probs[i] = p_change 
-                else:
-                    probs[i] = 0.0
-                    
+            probs[states.index(current)] = p_stay 
+            probs[states.index('ss')] = p_change 
+            
         next_state = np.random.choice(states, p=probs)
         seq.append(next_state)
         
+        # Streak nulstilles VED HVERT skift, uanset om det er til eller fra en afviger
         if next_state != current:
             streak = 0
             
@@ -127,7 +134,7 @@ for i, config in enumerate(all_block_configs):
         seq = generate_dynamic_sequence(n_trials_per_block, config['deviants'])
     
     # Teksten på skærmen opdateret til 'AF 24'
-    inst_text = f"BLOK {i+1} AF 24\n\nGæt næste hændelse!\nTryk 's' for Standard\nTryk 'k' for Deviant\n\nTryk på MELLEMRUM for at starte."
+    inst_text = f"BLOK {i+1} AF 24\n\nGæt næste hændelse!\nTryk 's' for Standard\nTryk 'k' for Afvigende\n\nTryk på MELLEMRUM for at starte."
     instruction = visual.TextStim(win, text=inst_text, color='black', height=0.05)
     
     blocks.append({
@@ -198,18 +205,28 @@ for block in blocks:
 # --- 5. AFSLUTNING OG DATA GEM ---
 win.close()
 
+# Tjek om mappen "Data" findes - hvis ikke, så opret den automatisk
+data_folder = "Data"
+if not os.path.exists(data_folder):
+    os.makedirs(data_folder)
+
+# Lav filnavnet med dato og ID
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 filename = f"pilot_data_{participant_id}_{timestamp}.csv"
 
+# Sæt mappen og filnavnet sammen (så den gemmer i Data/pilot_data_...)
+filepath = os.path.join(data_folder, filename)
+
 fieldnames = ['participant_id', 'block_num', 'dynamic', 'av', 'sv', 'as', 'trial', 'state', 'response', 'rt', 'correct']
 
-with open(filename, mode='w', newline='', encoding='utf-8') as file:
+# Brug 'filepath' i stedet for 'filename' når vi åbner/laver filen
+with open(filepath, mode='w', newline='', encoding='utf-8') as file:
     writer = csv.DictWriter(file, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(eksperiment_data)
 
 print(f"\n--- DATA GEMT ---")
-print(f"Al data er gemt i filen: {filename}\n")
+print(f"Al data er gemt i filen: {filepath}\n")
 
 print("--- PILOT RESULTATER Opsummering ---")
 for block in blocks:
