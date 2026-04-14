@@ -1,5 +1,6 @@
 from psychopy import prefs
 prefs.hardware['audioLib'] = ['PTB', 'sounddevice', 'pygame']
+prefs.hardware['audioSampleRate'] = 44100
 from psychopy import visual, core, event, sound, gui
 import numpy as np
 import random
@@ -24,8 +25,8 @@ fixation = visual.TextStim(win, text='+', color='black', height=0.05)
 vis_standard = visual.Circle(win, radius=0.15, fillColor='black')
 vis_deviant = visual.Circle(win, radius=0.3, fillColor='black')
 
-aud_standard = sound.Sound(value=440, secs=0.3)
-aud_deviant = sound.Sound(value=880, secs=0.3)
+aud_standard = sound.Sound(value=440, secs=0.3, sampleRate=44100)
+aud_deviant = sound.Sound(value=880, secs=0.3, sampleRate=44100)
 
 # --- 2. LOGIK TIL SEKVENSER ---
 states = ['ss', 'av', 'sv', 'as']
@@ -196,7 +197,8 @@ for block in blocks:
         eksperiment_data.append({
             'participant_id': participant_id,
             'block_num': block['block_num'],
-            'dynamic': block['type'] == 'dynamic', 
+            'dynamic': block['type'] == 'dynamic',
+            'static': block['type'] == 'static',
             'av': 'av' in block['deviants'],       
             'sv': 'sv' in block['deviants'],       
             'as': 'as' in block['deviants'],       
@@ -222,7 +224,7 @@ filename = f"pilot_data_{participant_id}_{timestamp}.csv"
 # Sæt mappen og filnavnet sammen (så den gemmer i Data/pilot_data_...)
 filepath = os.path.join(data_folder, filename)
 
-fieldnames = ['participant_id', 'block_num', 'dynamic', 'av', 'sv', 'as', 'trial', 'state', 'response', 'rt', 'correct']
+fieldnames = ['participant_id', 'block_num', 'dynamic', 'static', 'av', 'sv', 'as', 'trial', 'state', 'response', 'rt', 'correct']
 
 # Brug 'filepath' i stedet for 'filename' når vi åbner/laver filen
 with open(filepath, mode='w', newline='', encoding='utf-8') as file:

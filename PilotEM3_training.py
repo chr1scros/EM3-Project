@@ -1,6 +1,12 @@
-from psychopy import visual, core, event, sound
+from psychopy import prefs
+prefs.hardware['audioLib'] = ['PTB', 'sounddevice', 'pygame']
+prefs.hardware['audioSampleRate'] = 44100
+from psychopy import visual, core, event, sound, gui
 import numpy as np
 import random
+import csv
+from datetime import datetime
+import os
 
 # --- 1. OPSÆTNING AF VINDUE OG STIMULI ---
 win = visual.Window(fullscr=True, color='white', units='height')
@@ -9,8 +15,8 @@ fixation = visual.TextStim(win, text='+', color='black', height=0.05)
 vis_standard = visual.Circle(win, radius=0.15, fillColor='black')
 vis_deviant = visual.Circle(win, radius=0.3, fillColor='black')
 
-aud_standard = sound.Sound(value=440, secs=0.3)
-aud_deviant = sound.Sound(value=880, secs=0.3)
+aud_standard = sound.Sound(value=440, secs=0.3, sampleRate=44100)
+aud_deviant = sound.Sound(value=880, secs=0.3, sampleRate=44100)
 
 # Generel velkomst og forklaring af forsøget
 velkomst_tekst = (
@@ -156,15 +162,19 @@ for block in blocks:
 
         if state == 'ss':
             vis_standard.draw()
+            aud_standard.stop()
             aud_standard.play()
         elif state == 'sv':
             vis_deviant.draw()
+            aud_standard.stop()
             aud_standard.play()
         elif state == 'as':
             vis_standard.draw()
+            aud_deviant.stop()
             aud_deviant.play()
         elif state == 'av':
             vis_deviant.draw()
+            aud_deviant.stop()
             aud_deviant.play()
             
         win.flip()
