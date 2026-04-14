@@ -1,3 +1,5 @@
+from psychopy import prefs
+prefs.hardware['audioLib'] = ['PTB', 'sounddevice', 'pygame']
 from psychopy import visual, core, event, sound, gui
 import numpy as np
 import random
@@ -157,6 +159,9 @@ for block in blocks:
     for trial_num, state in enumerate(block['sequence']):
         fixation.draw()
         win.flip()
+
+        aud_standard.stop()
+        aud_deviant.stop()
         
         trial_clock.reset()
         keys = event.waitKeys(keyList=['s', 'k', 'escape'])
