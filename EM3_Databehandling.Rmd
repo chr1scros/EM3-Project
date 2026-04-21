@@ -1,0 +1,242 @@
+---
+title: "EM3_Databehandling"
+author: "Lucas"
+date: "2026-04-14"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+# Installer tidyverse hvis i ikke har den: install.packages("tidyverse")
+library(tidyverse)
+
+# ==========================================
+# 1. INDLÆS ALLE CSV-FILER FRA EN MAPPE
+# ==========================================
+# Skift stien herunder ("./data") til stien på den mappe, hvor I gemmer jeres csv-filer. 
+# "./" betyder bare "den mappe som dette R-script ligger i".
+mappe_sti <- "C:/Users/lundb/OneDrive/Skrivebord/KU/4. Semester/EM3/Projekt/Data"
+
+# Find alle filer der slutter på .csv
+filer <- list.files(path = mappe_sti, pattern = "\\.csv$", full.names = TRUE)
+
+# Indlæs dem alle og bind dem sammen til ét stort datasæt
+df <- filer %>% map_dfr(read_csv, show_col_types = FALSE)
+
+# ==========================================
+# 2. DATA CLEANING & KATEGORISERING
+# ==========================================
+df <- df %>%
+  mutate(
+    # TVING kolonnerne til at være logiske værdier (TRUE/FALSE) 
+    # Dette løser de NA-fejl og "Unknown"-fejl du oplevede
+    dynamic = as.logical(toupper(dynamic)),
+    static  = as.logical(toupper(static)),
+    correct = as.logical(toupper(correct)),
+    av = as.logical(toupper(av)),
+    sv = as.logical(toupper(sv)),
+    as = as.logical(toupper(as)),
+    
+    # Kategori: Blok Type
+    block_type = case_when(
+      dynamic == TRUE ~ "Dynamic",
+      static == TRUE  ~ "Static",
+      TRUE            ~ "Unknown"
+    ),
+    
+    # Kategori: Deviant Muligheder
+    deviant_possible = case_when(
+      av == TRUE ~ "Audio-Visual (AV)",
+      sv == TRUE ~ "Somato-Visual (SV)",
+      as == TRUE ~ "Audio-Somato (AS)",
+      TRUE       ~ "None"
+    )
+  ) %>%
+  # Fjern eventuelle NA-rækker i 'response' og 'correct'
+  filter(!is.na(response), !is.na(correct))
+
+# Funktion til at udregne Shannon Entropi
+calc_entropy <- function(x) {
+  p <- table(x) / length(x)
+  p <- p[p > 0] # Fjern 0 for at undgå log2(0) fejl
+  return(-sum(p * log2(p)))
+}
+
+# Funktion til at udregne løbende (kumulativ) entropi pr. trial
+calc_running_entropy <- function(x) {
+  sapply(1:length(x), function(i) {
+    # Tag alle trials fra starten af blokken op til nuværende trial (i)
+    current_seq <- x[1:i]
+    current_seq <- current_seq[!is.na(current_seq)] # Fjern eventuelle NAs
+    
+    # Hvis der ikke er noget data endnu, returner NA
+    if(length(current_seq) == 0) return(NA)
+    
+    # Udregn fordeling og entropi ligesom i din anden funktion
+    p <- table(current_seq) / length(current_seq)
+    p <- p[p > 0]
+    return(-sum(p * log2(p)))
+  })
+}
+```
+
+```{r}
+# ==========================================
+# DEL 1: SHANNON ENTROPI af blokke
+# ==========================================
+
+# Entropi pr. enkelt blok
+entropy_per_block <- df %>%
+  group_by(participant_id, block_num) %>%
+  summarise(entropy = calc_entropy(state), .groups = "drop")
+
+# Entropi pr. block type (Static vs. Dynamic)
+entropy_per_type <- df %>%
+  group_by(block_type) %>%
+  summarise(entropy = calc_entropy(state), .groups = "drop")
+
+# Entropi samlet for hele forsøget
+entropy_total <- df %>%
+  summarise(entropy = calc_entropy(state))
+```
+
+```{r}
+# ==========================================
+# Del 2. ANALYSE AF ENTROPI (FORSØGSPERSONENS GÆT / RESPONS)
+# ==========================================
+
+# Entropi af gæt pr. enkelt blok
+guess_entropy_block <- df %>%
+  group_by(participant_id, block_num, block_type) %>%
+  summarise(entropy_guess = calc_entropy(response), .groups = "drop")
+
+# Entropi af gæt på tværs af Static vs Dynamic
+guess_entropy_type <- df %>%
+  group_by(block_type) %>%
+  summarise(entropy_guess = calc_entropy(response), .groups = "drop")
+
+# Entropi af gæt samlet på tværs af ALT
+guess_entropy_total <- df %>%
+  summarise(entropy_guess = calc_entropy(response))
+```
+
+```{r}
+# ==========================================
+# Del 3: LOKAL (TRIAL-BY-TRIAL) ENTROPI
+# ==========================================
+
+running_entropy_block <- df %>%
+  # Sørg for at vi kun kigger inden for den enkelte forsøgspersons specifikke blok
+  group_by(participant_id, block_num) %>%
+  # Sørg for at data er sorteret korrekt efter trial-nummer, før vi udregner løbende entropi
+  arrange(trial, .by_group = TRUE) %>%
+  mutate(
+    # Udregn løbende entropi for stimuli (state) og gæt (response)
+    local_stimulus_entropy = calc_running_entropy(state),
+    local_guess_entropy = calc_running_entropy(response)
+  ) %>%
+  ungroup() # Husk at fjerne grupperingen igen
+```
+
+
+```{r}
+# ==========================================
+# DEL 4: KORREKTHED (ACCURACY) AF GÆT
+# ==========================================
+
+# Accuracy pr. enkelt blok
+acc_block <- df %>%
+  group_by(participant_id, block_num, block_type) %>%
+  summarise(accuracy = mean(correct), .groups = "drop")
+
+# Accuracy på tværs af Static vs Dynamic
+acc_type <- df %>%
+  group_by(block_type) %>%
+  summarise(accuracy = mean(correct), .groups = "drop")
+
+# Accuracy samlet for hele forsøget
+acc_total <- df %>%
+  summarise(accuracy = mean(correct))
+
+# Accuracy fordelt på Deviant-typer
+acc_deviant <- df %>%
+  group_by(deviant_possible) %>%
+  summarise(accuracy = mean(correct), .groups = "drop")
+
+
+# Udskriv de vigtigste tabeller i konsollen
+print("--- ENTROPI AF STIMULI (Static vs Dynamic) ---")
+print(entropy_per_type)
+
+print("--- ENTROPI AF GÆT (Static vs Dynamic) ---")
+print(guess_entropy_type)
+
+print("--- ACCURACY (Static vs Dynamic) ---")
+print(acc_type)
+```
+
+```{r}
+# Sæt et pænt tema for alle plots
+theme_set(theme_minimal(base_size = 14))
+
+# PLOT 1: Accuracy fordelt på Static vs Dynamic
+plot_acc <- ggplot(acc_block, aes(x = block_type, y = accuracy, fill = block_type)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.5) + # Viser de individuelle blokke som prikker
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  scale_fill_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  labs(
+    title = "Accuracy: Static vs. Dynamic Blocks",
+    x = "Block Type",
+    y = "Accuracy (%)"
+  ) +
+  theme(legend.position = "none")
+
+# PLOT 2: Entropien af forsøgspersonens gæt fordelt på Static vs Dynamic
+plot_guess_entropy <- ggplot(guess_entropy_block, aes(x = block_type, y = entropy_guess, fill = block_type)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(width = 0.2, alpha = 0.5) +
+  scale_fill_manual(values = c("Static" = "#34A853", "Dynamic" = "#FBBC05")) +
+  labs(
+    title = "Guess Entropy: Static vs. Dynamic Blocks",
+    subtitle = "Higher entropy = more random guessing",
+    x = "Block Type",
+    y = "Shannon Entropy (Bits)"
+  ) +
+  theme(legend.position = "none")
+
+plot_local_entropy <- ggplot(running_entropy_block, aes(x = trial, y = local_stimulus_entropy, color = block_type, fill = block_type)) +
+  # Viser den gennemsnitlige linje pr. trial
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  # Tilføjer et glidende gennemsnit med usikkerhedsbånd (shaded area)
+  geom_smooth(method = "loess", alpha = 0.2, linetype = "dashed") +
+  # Farver
+  scale_color_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335", "Unknown" = "gray")) +
+  scale_fill_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335", "Unknown" = "gray")) +
+  labs(
+    title = "Trial-by-Trial: Lokal Stimulus Entropi",
+    subtitle = "Hvordan entropien (uforudsigeligheden) udvikler sig gennem blokken",
+    x = "Trial Nummer",
+    y = "Løbende Entropi (Bits)",
+    color = "Block Type",
+    fill = "Block Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  # Fjern "Unknown" fra plottet for et renere look (hvis I har sådanne rækker)
+  coord_cartesian(xlim = c(1, max(df$trial, na.rm = TRUE)))
+
+
+# Vis plots
+print(plot_acc)
+print(plot_guess_entropy)
+print(plot_local_entropy)
+
+```
+
