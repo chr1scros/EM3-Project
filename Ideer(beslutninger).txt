@@ -1,6 +1,8 @@
 - Hvilke blokke skal vi have med i vores EEG forsøg?
-    - ? 
+    - (Static og Dynamic, AV/SV/AS) 
 - Hvor mange trials og blokke?
+    - 15 blokke, 80 trials (ca. 20 deviants pr blok)
 - Estimat af samlet forsøgstid?
 - Der skal være 2 sekunder mellem hver stimuli i EEG forsøget
 - Folk skal KUN trykke på mellemrum, når der er en afviger/deviant, ligemeget hvilken slags
+- Finde OpenScience data
