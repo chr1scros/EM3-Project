@@ -1,0 +1,6 @@
+- Hvilke blokke skal vi have med i vores EEG forsøg?
+    - ? 
+- Hvor mange trials og blokke?
+- Estimat af samlet forsøgstid?
+- Der skal være 2 sekunder mellem hver stimuli i EEG forsøget
+- Folk skal KUN trykke på mellemrum, når der er en afviger/deviant, ligemeget hvilken slags
