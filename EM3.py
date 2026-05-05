@@ -1,5 +1,5 @@
 from psychopy import prefs
-prefs.hardware['audioLib'] = ['pygame', 'sounddevice','PTB']
+prefs.hardware['audioLib'] = ['pygame', 'sounddevice', 'PTB']
 prefs.hardware['audioSampleRate'] = 44100
 
 from psychopy import visual, core, event, sound, gui
@@ -8,9 +8,6 @@ import os
 import csv
 import time
 
-# ==========================================
-# 1. OPSÆTNING AF EEG TRIGGERS (MED DUMMY FALLBACK)
-# ==========================================
 try:
     import serial
     # Ret "COM3" til den port EEG-maskinen bruger
@@ -28,8 +25,6 @@ def send_trigger(code):
             port.write(code.to_bytes(1, 'big'))
         except Exception:
             pass
-    # Print er god til test, men kan fjernes i selve lab'et for at spare millisekunder
-    # print(f'Trigger sent: {code}')
 
 # Trigger Mapping
 T_STANDARD = 1
@@ -37,9 +32,6 @@ T_AV_DEVIANT = 2
 T_SV_DEVIANT = 3
 T_AS_DEVIANT = 4
 
-# ==========================================
-# 2. EKSPERIMENTELT SETUP & DATA
-# ==========================================
 exp_info = {'Forsøgsperson ID': ''}
 dlg = gui.DlgFromDict(dictionary=exp_info, sortKeys=False, title="EM3 Eksperiment")
 if not dlg.OK:
@@ -67,10 +59,6 @@ aud_deviant = sound.Sound(value=880, secs=STIM_DURATION, sampleRate=44100)
 vis_standard = visual.Circle(win, radius=0.15, fillColor='black', lineColor='black')
 vis_deviant = visual.Circle(win, radius=0.3, fillColor='black', lineColor='black')
 fixation = visual.TextStim(win, text='+', color='black', height=0.1)
-
-# ==========================================
-# 3. BLOK STRUKTUR & FUNKTIONER
-# ==========================================
 
 # Rækkefølge af blok-længder pr. type (Static / Dynamic)
 block_lengths = [20, 60, 60, 60]
@@ -126,12 +114,9 @@ def generate_trials(n_trials, prob_standard):
             seq.append('deviant')
     return seq
 
-# ==========================================
-# 4. HOVEDLOOPET (EKSPERIMENTET)
-# ==========================================
 block_counter = 1
 
-# Opdateret og detaljeret instruktion over flere vinduer
+# Instruktion
 instructions = [
     "Velkommen til forsøget!\n\n"
     "I dette forsøg vil du opleve sekvenser af lyde og sekvenser af cirkler på skærmen.\n\n"
@@ -141,7 +126,7 @@ instructions = [
     "1. Du sidder behageligt og kan hvile armene afslappet. Men altid have én hånd på mellemrums tasten.\n"
     "2. Du forsøger at lade være med at blinke, lige når stimuli vises.\n"
     "3. Du skal slappe af i skuldre, kæbe og nakke.\n\n"
-    "Brug hellere end gerne pauserne mellem blokkene til at blinke og bevæge dit hovede alt det, du vil!\n\n"
+    "Tag hellere end gerne pauserne mellem blokkene til at blinke og bevæge dit hovede alt det, du vil!\n\n"
     "Tryk på MELLEMRUM for at læse videre.",
     
     "OPGAVEN:\n\n"
@@ -166,115 +151,135 @@ for inst_text in instructions:
 
 trial_clock = core.Clock()
 
-for dev_type in deviant_types:
-    
-    # Kør først 4 Statiske blokke, derefter 4 Dynamiske blokke for denne deviant type
-    for block_type in ['Static', 'Dynamic']:
+phases = [
+    {'name': 'Training', 'lengths': [10], 'msg': "Nu starter træningsfasen.\n\nDu vil gennemgå 6 korte blokke (10 trials i hver) for at lære opgaven at kende.\n\nTryk på MELLEMRUM for at starte."},
+    {'name': 'Experiment', 'lengths': block_lengths, 'msg': "Træningen er slut!\n\nNu starter selve forsøget.\n\nTryk på MELLEMRUM for at starte."}
+]
+
+total_blocks = 30
+
+for phase in phases:
+    # Vis fase-instruktion
+    phase_inst = visual.TextStim(win, text=phase['msg'], color='black', height=0.04)
+    phase_inst.draw()
+    win.flip()
+    keys = event.waitKeys(keyList=['space', 'escape'])
+    if keys and 'escape' in keys:
+        core.quit()
         
-        for b_length in block_lengths:
-            if block_type == 'Static':
-                trials = generate_trials(b_length, 0.85) # Den gamle (Flat probability)
-            else:
-                trials = generate_dynamic_trials(b_length) # Den nye (Hazard Rate)
+    random.shuffle(deviant_types)
+    
+    for dev_type in deviant_types:
+        
+        # Kør først Statiske blokke, derefter Dynamiske blokke for denne deviant type
+        for block_type in ['Static', 'Dynamic']:
             
-            # Pause mellem blokke
-            pause_msg = (
-                f"Blok {block_counter}/24 er klar.\n\n"
-                "Tag en dyb indånding, blink alt det du har lyst til, og slap af i øjnene.\n\n"
-                "Der er ingen stress i pauserne - du styrer helt selv tempoet.\n"
-                "Når du er afslappet og klar igen, tryk på mellemrum for at fortsætte."
-            )
-            pause_text = visual.TextStim(win, text=pause_msg, color='black', height=0.04)
-            pause_text.draw()
-            win.flip()
-            keys = event.waitKeys(keyList=['space', 'escape'])
-            if keys and 'escape' in keys:
-                core.quit()
-            
-            # 2 sekunders forsinkelse (med fiksationskors) før første stimulus i blokken
-            fixation.draw()
-            win.flip()
-            core.wait(2.0)
-            
-            trial_num = 1
-            for trial in trials:
-                # Definer hvad der skal vises og spilles baseret på dev_type og trial
-                play_aud = aud_standard
-                show_vis = vis_standard
-                trig_code = T_STANDARD
-                is_deviant_trial = False
+            for b_length in phase['lengths']:
+                current_block_type = f"Training_{block_type}" if phase['name'] == 'Training' else block_type
                 
-                if trial == 'deviant':
-                    is_deviant_trial = True
-                    if dev_type == 'AV':
-                        play_aud = aud_deviant
-                        show_vis = vis_deviant
-                        trig_code = T_AV_DEVIANT
-                    elif dev_type == 'AS':
-                        play_aud = aud_deviant
-                        show_vis = vis_standard
-                        trig_code = T_AS_DEVIANT
-                    elif dev_type == 'SV':
-                        play_aud = aud_standard
-                        show_vis = vis_deviant
-                        trig_code = T_SV_DEVIANT
-                
-                # --- PRÆSENTATION AF STIMULUS ---
-                # Nulstil lyd og event-buffer
-                play_aud.stop() 
-                event.clearEvents()
-                trial_clock.reset()
-                
-                # Sæt triggeren til at fyre PRÆCIS når skærmen opdaterer
-                win.callOnFlip(send_trigger, trig_code)
-                
-                # Tegn stimulus
-                show_vis.draw()
-                fixation.draw()
-                win.flip() # <--- Her sendes triggeren hardware-mæssigt!
-                
-                # Spil lyden øjeblikkeligt efter skærmen flipper
-                play_aud.play()
-                
-                # Sæt standardværdier
-                response = False
-                rt = 2.0000
-                stim_removed = False
-                
-                # Kør hele trial loopet (2.0 sekunder)
-                while trial_clock.getTime() < ISI_TOTAL:
-                    # Fjern stimulus fra skærmen efter 0.3 sekunder
-                    if trial_clock.getTime() >= STIM_DURATION and not stim_removed:
-                        fixation.draw()
-                        win.flip()
-                        stim_removed = True
-                    
-                    # Lyt efter input igennem HELE trialet (også under stimulus)
-                    keys = event.getKeys(keyList=['space', 'escape'], timeStamped=trial_clock)
-                    if keys:
-                        if keys[0][0] == 'escape':
-                            core.quit()
-                        elif response is False: # Registrer kun det første tryk
-                            response = True
-                            rt = round(keys[0][1], 4)
-                
-                # Evaluering af svar (Correct rejection vs Hit vs False Alarm vs Miss)
-                if is_deviant_trial and response is True:
-                    correct = True
-                elif not is_deviant_trial and response is False:
-                    correct = True
+                if block_type == 'Static':
+                    trials = generate_trials(b_length, 0.85) # Den gamle (Flat probability)
                 else:
-                    correct = False
+                    trials = generate_dynamic_trials(b_length) # Den nye (Hazard Rate)
                 
-                # Gem data
-                with open(filename, 'a', newline='') as file:
-                    writer = csv.writer(file)
-                    writer.writerow([participant_id, block_counter, block_type, dev_type, 
-                                     trial_num, trial, trig_code, response, rt, correct])
+                # Pause mellem blokke
+                pause_msg = (
+                    f"Blok {block_counter}/{total_blocks} er klar.\n\n"
+                    "Tag en dyb indånding, blink alt det du har lyst til, og slap af i øjnene.\n\n"
+                    "Der er ingen stress i pauserne - du styrer helt selv tempoet.\n"
+                    "Når du er afslappet og klar igen, tryk på mellemrum for at fortsætte."
+                )
+                pause_text = visual.TextStim(win, text=pause_msg, color='black', height=0.04)
+                pause_text.draw()
+                win.flip()
+                keys = event.waitKeys(keyList=['space', 'escape'])
+                if keys and 'escape' in keys:
+                    core.quit()
                 
-                trial_num += 1
-            
-            block_counter += 1
+                # 2 sekunders forsinkelse (med fiksationskors) før første stimulus i blokken
+                fixation.draw()
+                win.flip()
+                core.wait(2.0)
+                
+                trial_num = 1
+                for trial in trials:
+                    # Definer hvad der skal vises og spilles baseret på dev_type og trial
+                    play_aud = aud_standard
+                    show_vis = vis_standard
+                    trig_code = T_STANDARD
+                    is_deviant_trial = False
+                    
+                    if trial == 'deviant':
+                        is_deviant_trial = True
+                        if dev_type == 'AV':
+                            play_aud = aud_deviant
+                            show_vis = vis_deviant
+                            trig_code = T_AV_DEVIANT
+                        elif dev_type == 'AS':
+                            play_aud = aud_deviant
+                            show_vis = vis_standard
+                            trig_code = T_AS_DEVIANT
+                        elif dev_type == 'SV':
+                            play_aud = aud_standard
+                            show_vis = vis_deviant
+                            trig_code = T_SV_DEVIANT
+                    
+                    # --- PRÆSENTATION AF STIMULUS ---
+                    # Nulstil lyd og event-buffer
+                    play_aud.stop() 
+                    event.clearEvents()
+                    trial_clock.reset()
+                    
+                    # Sæt triggeren til at fyre PRÆCIS når skærmen opdaterer
+                    win.callOnFlip(send_trigger, trig_code)
+                    
+                    # Tegn stimulus
+                    show_vis.draw()
+                    fixation.draw()
+                    win.flip() # <--- Her sendes triggeren hardware-mæssigt!
+                    
+                    # Spil lyden øjeblikkeligt efter skærmen flipper
+                    play_aud.play()
+                    
+                    # Sæt standardværdier
+                    response = False
+                    rt = 2.0000
+                    stim_removed = False
+                    
+                    # Kør hele trial loopet (2.0 sekunder)
+                    while trial_clock.getTime() < ISI_TOTAL:
+                        # Fjern stimulus fra skærmen efter 0.3 sekunder
+                        if trial_clock.getTime() >= STIM_DURATION and not stim_removed:
+                            fixation.draw()
+                            win.flip()
+                            stim_removed = True
+                        
+                        # Lyt efter input igennem HELE trialet (også under stimulus)
+                        keys = event.getKeys(keyList=['space', 'escape'], timeStamped=trial_clock)
+                        if keys:
+                            if keys[0][0] == 'escape':
+                                core.quit()
+                            elif response is False: # Registrer kun det første tryk
+                                response = True
+                                rt = round(keys[0][1], 4)
+                    
+                    # Evaluering af svar (Correct rejection vs Hit vs False Alarm vs Miss)
+                    if is_deviant_trial and response is True:
+                        correct = True
+                    elif not is_deviant_trial and response is False:
+                        correct = True
+                    else:
+                        correct = False
+                    
+                    # Gem data
+                    with open(filename, 'a', newline='') as file:
+                        writer = csv.writer(file)
+                        writer.writerow([participant_id, block_counter, current_block_type, dev_type, 
+                                         trial_num, trial, trig_code, response, rt, correct])
+                    
+                    trial_num += 1
+                
+                block_counter += 1
 
 # Afslutning
 end_text = visual.TextStim(win, text="Forsøget er slut.\n\nTak for din deltagelse!", color='black')
