@@ -1,7 +1,6 @@
 from psychopy import prefs
 prefs.hardware['audioLib'] = ['pygame', 'sounddevice', 'PTB']
 prefs.hardware['audioSampleRate'] = 44100
-
 from psychopy import visual, core, event, sound, gui
 import random
 import os
@@ -10,14 +9,11 @@ import time
 
 try:
     import serial
-    # Ret "COM3" til den port EEG-maskinen bruger
     port = serial.Serial("COM3", 115200) 
     eeg_connected = True
-    print("Succes: Forbundet til EEG Serial Port.")
 except Exception as e:
     eeg_connected = False
-    print(f"ADVARSEL: Kunne ikke forbinde til EEG (Kører i Test-tilstand). Fejl: {e}")
-
+   
 def send_trigger(code):
     """Sender trigger præcis når skærmen flipper"""
     if eeg_connected:
@@ -32,6 +28,10 @@ T_AV_DEVIANT = 2
 T_SV_DEVIANT = 3
 T_AS_DEVIANT = 4
 
+total_blocks = 30
+
+static_prob = 0.85
+
 exp_info = {'Forsøgsperson ID': ''}
 dlg = gui.DlgFromDict(dictionary=exp_info, sortKeys=False, title="EM3 Eksperiment")
 if not dlg.OK:
@@ -45,7 +45,7 @@ with open(filename, 'w', newline='') as file:
     writer.writerow(['participant_id', 'block_num', 'block_type', 'deviant_type', 
                      'trial_num', 'stimulus_state', 'trigger_code', 'response', 'rt', 'correct'])
 
-# Skærm (Brug fullscreen=True i laboratoriet!)
+# Skærm 
 win = visual.Window(color='white', fullscr=True, units='height')
 event.globalKeys.add(key='escape', func=core.quit)
 
@@ -60,10 +60,10 @@ vis_standard = visual.Circle(win, radius=0.15, fillColor='black', lineColor='bla
 vis_deviant = visual.Circle(win, radius=0.3, fillColor='black', lineColor='black')
 fixation = visual.TextStim(win, text='+', color='black', height=0.1)
 
-# Rækkefølge af blok-længder pr. type (Static / Dynamic)
+# Rækkefølge af blok-længder
 block_lengths = [20, 60, 60, 60]
 
-# Vi blander rækkefølgen af deviants, så P300 ikke påvirkes af træthed (Order Effect)
+# Vi blander rækkefølgen af deviants
 deviant_types = ['AV', 'AS', 'SV']
 random.shuffle(deviant_types)
 
@@ -96,12 +96,12 @@ def generate_dynamic_trials(n_trials):
         # Kast "terningen" ud fra den nye sandsynlighed
         if random.random() < p_deviant:
             seq.append('deviant')
-            run_length = 0 # Nulstil tælleren, fordi vi lige fik en afviger
+            run_length = 0 # Nulstil tælleren
         else:
             seq.append('standard')
             run_length += 1
             
-    # Skær arrayet præcis til n_trials (hvis while-loopet rammer skævt til sidst)
+    # Skær arrayet præcis til n_trials (
     return seq[:n_trials]
 
 def generate_trials(n_trials, prob_standard):
@@ -126,7 +126,7 @@ instructions = [
     "1. Du sidder behageligt og kan hvile armene afslappet. Men altid have én hånd på mellemrums tasten.\n"
     "2. Du forsøger at lade være med at blinke, lige når stimuli vises.\n"
     "3. Du skal slappe af i skuldre, kæbe og nakke.\n\n"
-    "Tag hellere end gerne pauserne mellem blokkene til at blinke og bevæge dit hovede alt det, du vil!\n\n"
+    "Brug hellere end gerne pauserne mellem blokkene til at blinke og bevæge dit hovede alt det, du vil!\n\n"
     "Tryk på MELLEMRUM for at læse videre.",
     
     "OPGAVEN:\n\n"
@@ -152,11 +152,9 @@ for inst_text in instructions:
 trial_clock = core.Clock()
 
 phases = [
-    {'name': 'Training', 'lengths': [10], 'msg': "Nu starter træningsfasen.\n\nDu vil gennemgå 6 korte blokke (10 trials i hver) for at lære opgaven at kende.\n\nTryk på MELLEMRUM for at starte."},
+    {'name': 'Training', 'lengths': [15], 'msg': "Nu starter træningsfasen.\n\nDu vil gennemgå 6 korte blokke (15 trials i hver) for at lære opgaven at kende.\n\nTryk på MELLEMRUM for at starte."},
     {'name': 'Experiment', 'lengths': block_lengths, 'msg': "Træningen er slut!\n\nNu starter selve forsøget.\n\nTryk på MELLEMRUM for at starte."}
 ]
-
-total_blocks = 30
 
 for phase in phases:
     # Vis fase-instruktion
@@ -178,9 +176,9 @@ for phase in phases:
                 current_block_type = f"Training_{block_type}" if phase['name'] == 'Training' else block_type
                 
                 if block_type == 'Static':
-                    trials = generate_trials(b_length, 0.85) # Den gamle (Flat probability)
+                    trials = generate_trials(b_length, static_prob) # Static
                 else:
-                    trials = generate_dynamic_trials(b_length) # Den nye (Hazard Rate)
+                    trials = generate_dynamic_trials(b_length) # Dynamic
                 
                 # Pause mellem blokke
                 pause_msg = (
@@ -224,7 +222,7 @@ for phase in phases:
                             show_vis = vis_deviant
                             trig_code = T_SV_DEVIANT
                     
-                    # --- PRÆSENTATION AF STIMULUS ---
+                    # PRÆSENTATION AF STIMULUS
                     # Nulstil lyd og event-buffer
                     play_aud.stop() 
                     event.clearEvents()
@@ -236,9 +234,9 @@ for phase in phases:
                     # Tegn stimulus
                     show_vis.draw()
                     fixation.draw()
-                    win.flip() # <--- Her sendes triggeren hardware-mæssigt!
+                    win.flip()
                     
-                    # Spil lyden øjeblikkeligt efter skærmen flipper
+                    # Spil lyden
                     play_aud.play()
                     
                     # Sæt standardværdier
@@ -246,24 +244,24 @@ for phase in phases:
                     rt = 2.0000
                     stim_removed = False
                     
-                    # Kør hele trial loopet (2.0 sekunder)
+                    # Kør hele trial loopet
                     while trial_clock.getTime() < ISI_TOTAL:
-                        # Fjern stimulus fra skærmen efter 0.3 sekunder
+                        # Fjern stimulus fra skærmen
                         if trial_clock.getTime() >= STIM_DURATION and not stim_removed:
                             fixation.draw()
                             win.flip()
                             stim_removed = True
                         
-                        # Lyt efter input igennem HELE trialet (også under stimulus)
+                        # Lyt efter input
                         keys = event.getKeys(keyList=['space', 'escape'], timeStamped=trial_clock)
                         if keys:
                             if keys[0][0] == 'escape':
                                 core.quit()
-                            elif response is False: # Registrer kun det første tryk
+                            elif response is False: 
                                 response = True
                                 rt = round(keys[0][1], 4)
                     
-                    # Evaluering af svar (Correct rejection vs Hit vs False Alarm vs Miss)
+                    # Evaluering af svar
                     if is_deviant_trial and response is True:
                         correct = True
                     elif not is_deviant_trial and response is False:
