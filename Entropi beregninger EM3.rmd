@@ -1,0 +1,1314 @@
+---
+title: "Entropi analyse EM3"
+output: html_document
+date: "2026-04-21"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# ==========================================
+# KOMPLET NYT ANALYSESCRIPT: BINÆR ENTROPI & SDT
+# ==========================================
+library(tidyverse)
+
+# 1. INDLÆSNING & BINARISERING
+mappe_sti <- "/Users/chris/Library/CloudStorage/GoogleDrive-christoffer.andersen.privat@gmail.com/Andre computere/Christoffers Mac/Google Drev/Uni/4Semester/EM3/Eksperiment/Data"
+filer <- list.files(path = mappe_sti, pattern = "\\.csv$", full.names = TRUE)
+
+df_clean <- filer %>% 
+  map_dfr(read_csv, show_col_types = FALSE) %>%
+  mutate(
+    # Binarisering: Alle deviants (uanset type) bliver 1, Standard bliver 0
+    binary_state = ifelse(state == "Standard", 0, 1),
+    # Kategorisering af faser
+    phase = case_when(
+      block_num <= 12 ~ "1 Deviant (Simple)",
+      block_num > 12  ~ "3 Deviants (Mixed)",
+      TRUE            ~ "Middle"
+    ),
+    block_type = ifelse(as.logical(toupper(dynamic)), "Dynamic", "Static")
+  ) %>%
+  filter(!is.na(response), phase != "Middle")
+
+df_clean <- df_clean %>%
+  mutate(
+    # Vi tjekker nu efter "ss" i stedet for "Standard"
+    binary_state = ifelse(state == "ss", 0, 1)
+  )
+
+
+# 2. ENTROPI FUNKTIONER
+calc_running_entropy <- function(x) {
+  sapply(1:length(x), function(i) {
+    current_seq <- x[1:i]
+    p <- table(current_seq) / length(current_seq)
+    p <- p[p > 0]
+    return(-sum(p * log2(p)))
+  })
+}
+
+# 3. BEREGNING AF LØBENDE ENTROPI & KÆDER
+threshold <- 1
+
+analysis_results <- df_clean %>%
+  group_by(participant_id, block_num) %>%
+  arrange(trial, .by_group = TRUE) %>%
+  mutate(
+    local_entropy = calc_running_entropy(binary_state),
+    is_above = local_entropy > threshold
+  ) %>%
+  ungroup()
+
+# 4. KÆDELÆNGDE & AREAL ANALYSE
+entropy_metrics <- analysis_results %>%
+  group_by(phase, block_type, participant_id, block_num) %>%
+  summarise(
+    area_above = sum(pmax(0, local_entropy - threshold), na.rm = TRUE),
+    area_below = sum(pmax(0, threshold - local_entropy), na.rm = TRUE),
+    # Beregn gennemsnitlig kædelængde
+    avg_chain_above = {
+      runs <- rle(na.omit(is_above))
+      if(length(runs$lengths[runs$values]) == 0) 0 else mean(runs$lengths[runs$values])
+    },
+    avg_chain_below = {
+      runs <- rle(na.omit(!is_above))
+      if(length(runs$lengths[runs$values]) == 0) 0 else mean(runs$lengths[runs$values])
+    },
+    accuracy = mean(as.logical(toupper(correct))),
+    .groups = "drop"
+  )
+
+# 5. STATISTISK SAMMENLIGNING (TWO-WAY ANOVA)
+# Tester om korrekthed påvirkes af fase (1 vs 3 deviants) og blok-type (Static/Dynamic)
+# Opdateret model til Repeated Measures ANOVA
+model_acc <- aov(accuracy ~ phase * block_type + Error(participant_id/(phase*block_type)), data = entropy_metrics)
+
+
+# 6. VISUALISERING: KORREKTHED VS. ENTROPISK AREAL
+ggplot(entropy_metrics, aes(x = phase, y = accuracy, fill = block_type)) +
+  geom_boxplot(alpha = 0.7) +
+  facet_wrap(~block_type) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Korrekthed pr. fase (Binær Model)", 
+       subtitle = "Sammenligner diskriminationsevne når entropi-grundlaget er ens",
+       y = "Accuracy (%)", x = "Fase") +
+  theme_minimal()
+```
+
+```{r}
+# Funktion til at udregne Shannon Entropi (Statisk)
+calc_entropy <- function(x) {
+  p <- table(x) / length(x)
+  p <- p[p > 0] # Fjern 0 for at undgå log2(0) fejl
+  return(-sum(p * log2(p)))
+}
+
+# Funktion til at udregne løbende (kumulativ) entropi pr. trial
+calc_running_entropy <- function(x) {
+  sapply(1:length(x), function(i) {
+    current_seq <- x[1:i]
+    current_seq <- current_seq[!is.na(current_seq)] 
+    if(length(current_seq) == 0) return(NA)
+    
+    p <- table(current_seq) / length(current_seq)
+    p <- p[p > 0]
+    return(-sum(p * log2(p)))
+  })
+}
+```
+
+```{r}
+# ==============================================================================
+# MONTE CARLO SIMULERING AF BAYESIANSK ENTROPI (Pilot)
+# ==============================================================================
+library(tidyverse)
+
+# --- 1. Parametre ---
+N_trials <- 1440
+n_simulations <- 1000
+
+# --- 2. Generator-funktioner (Oversat direkte fra dit PsychoPy script) ---
+
+# Statisk Generator
+generate_static <- function(n) {
+  seq <- numeric(n)
+  current <- 0 # 0 = ss (Standard), 1 = Deviant
+  for(i in 1:n) {
+    if(current == 0) {
+      p_change <- 0.35 # 65% chance for at blive, 35% for afviger
+    } else {
+      p_change <- 0.90 # 90% chance for at returnere til ss
+    }
+    
+    change <- rbinom(1, 1, p_change)
+    current <- ifelse(change == 1, 1 - current, current)
+    seq[i] <- current
+  }
+  return(seq)
+}
+
+# Dynamisk Generator (Med Streak-logik)
+generate_dynamic <- function(n) {
+  seq <- numeric(n)
+  current <- 0
+  streak <- 0
+  for(i in 1:n) {
+    streak <- streak + 1
+    if(current == 0) {
+      change_probs <- c(0.15, 0.25, 0.45, 0.80)
+      idx <- min(streak, 4)
+      p_change <- change_probs[idx]
+    } else {
+      change_probs <- c(0.85, 0.99)
+      idx <- min(streak, 2)
+      p_change <- change_probs[idx]
+    }
+    
+    change <- rbinom(1, 1, p_change)
+    next_state <- ifelse(change == 1, 1 - current, current)
+    seq[i] <- next_state
+    
+    if(next_state != current) {
+      streak <- 0 # Streak nulstilles ved skift
+    }
+    current <- next_state
+  }
+  return(seq)
+}
+
+# --- 3. Bayesiansk Opdatering & Entropi-funktion ---
+# Denne funktion udregner den løbende entropi, som hjernen "oplever" trial-for-trial.
+calc_mean_bayesian_entropy <- function(seq) {
+  t <- 1:length(seq)
+  cum_dev <- cumsum(seq) # Hvor mange deviants har vi set indtil nu?
+  
+  # Bayesian Updating (Beta-Binomial Conjugate)
+  # Vi starter med en flad prior Beta(1,1).
+  # Den forventede sandsynlighed p er (hits + alpha) / (total + alpha + beta)
+  p_bayes <- (cum_dev + 1) / (t + 2) 
+  
+  # Undgå log2 af absolut 0 eller 1
+  p_bayes <- pmax(pmin(p_bayes, 0.9999), 0.0001)
+  
+  # Shannon Entropi: H(p) = -p*log2(p) - (1-p)*log2(1-p)
+  running_entropy <- - (p_bayes * log2(p_bayes) + (1 - p_bayes) * log2(1 - p_bayes))
+  
+  # Returner gennemsnittet for blokken
+  return(mean(running_entropy))
+}
+
+# --- 4. Kør Monte Carlo Simuleringen ---
+# (Dette tager et par sekunder, da den genererer og analyserer 20.000 blokke)
+set.seed(42) # For reproducerbarhed
+static_entropies <- replicate(n_simulations, calc_mean_bayesian_entropy(generate_static(N_trials)))
+dynamic_entropies <- replicate(n_simulations, calc_mean_bayesian_entropy(generate_dynamic(N_trials)))
+
+# --- 5. Forbered Data og Beregn Statistik ---
+sim_data <- tibble(
+  Entropy = c(static_entropies, dynamic_entropies),
+  Block_Type = factor(rep(c("Static", "Dynamic"), each = n_simulations))
+)
+
+mean_static <- mean(static_entropies)
+sd_static <- sd(static_entropies)
+mean_dynamic <- mean(dynamic_entropies)
+sd_dynamic <- sd(dynamic_entropies)
+
+# --- Beregn 95% Kvantil-intervaller ---
+ci_static <- quantile(static_entropies, probs = c(0.025, 0.975))
+ci_dynamic <- quantile(dynamic_entropies, probs = c(0.025, 0.975))
+
+print("--- 95% INTERVALLER (Kvantiler) ---")
+cat("Static 95% CI: [", ci_static[1], "; ", ci_static[2], "]\n")
+cat("Dynamic 95% CI: [", ci_dynamic[1], "; ", ci_dynamic[2], "]\n")
+
+```
+
+```{r}
+# ==============================================================================
+# MONTE CARLO SIMULERING AF BAYESIANSK ENTROPI (Main)
+# ==============================================================================
+library(tidyverse)
+
+# --- 1. Parametre ---
+N_trials <- 600
+n_simulations <- 1000
+
+# --- 2. Generator-funktioner (Oversat direkte fra dit PsychoPy script) ---
+
+# Statisk Generator
+generate_static <- function(n) {
+  seq <- numeric(n)
+  current <- 0 # 0 = ss (Standard), 1 = Deviant
+  for(i in 1:n) {
+    if(current == 0) {
+      p_change <- 0.15 #
+    } else {
+      p_change <- 0.85 #
+    }
+    
+    change <- rbinom(1, 1, p_change)
+    current <- ifelse(change == 1, 1 - current, current)
+    seq[i] <- current
+  }
+  return(seq)
+}
+
+# Dynamisk Generator (Med Streak-logik)
+generate_dynamic <- function(n) {
+  # Allokerer en vektor med 0'er af længden n
+  seq <- numeric(n)
+  
+  # Tæller hvor mange standarder vi har haft i træk
+  run_length <- 0 
+  
+  for(i in 1:n) {
+    # Udregn sandsynligheden for en afviger baseret på 'run_length'
+    if (run_length < 3) {
+      p_deviant <- 0.00
+    } else if (run_length == 3) {
+      p_deviant <- 0.10
+    } else if (run_length == 4) {
+      p_deviant <- 0.15
+    } else if (run_length == 5) {
+      p_deviant <- 0.25
+    } else if (run_length == 6) {
+      p_deviant <- 0.50
+    } else {
+      p_deviant <- 1.00 # Efter 7 standarder SKAL den komme
+    }
+    
+    # Kast "terningen" ud fra den nye sandsynlighed
+    change <- rbinom(1, 1, p_deviant)
+    
+    # 1 betyder, at der udløses en afviger
+    if (change == 1) {
+      seq[i] <- 1           # 1 repræsenterer 'deviant'
+      run_length <- 0       # Nulstil tælleren, da vi netop har haft en afviger
+    } else {
+      seq[i] <- 0           # 0 repræsenterer 'standard'
+      run_length <- run_length + 1 # Tæl en ekstra standard i træk
+    }
+  }
+  
+  return(seq)
+}
+
+# --- 3. Bayesiansk Opdatering & Entropi-funktion ---
+# Denne funktion udregner den løbende entropi, som hjernen "oplever" trial-for-trial.
+calc_mean_bayesian_entropy <- function(seq) {
+  t <- 1:length(seq)
+  cum_dev <- cumsum(seq) # Hvor mange deviants har vi set indtil nu?
+  
+  # Bayesian Updating (Beta-Binomial Conjugate)
+  # Vi starter med en flad prior Beta(1,1).
+  # Den forventede sandsynlighed p er (hits + alpha) / (total + alpha + beta)
+  p_bayes <- (cum_dev + 1) / (t + 2) 
+  
+  # Undgå log2 af absolut 0 eller 1
+  p_bayes <- pmax(pmin(p_bayes, 0.9999), 0.0001)
+  
+  # Shannon Entropi: H(p) = -p*log2(p) - (1-p)*log2(1-p)
+  running_entropy <- - (p_bayes * log2(p_bayes) + (1 - p_bayes) * log2(1 - p_bayes))
+  
+  # Returner gennemsnittet for blokken
+  return(mean(running_entropy))
+}
+
+# --- 4. Kør Monte Carlo Simuleringen ---
+# (Dette tager et par sekunder, da den genererer og analyserer 20.000 blokke)
+set.seed(42) # For reproducerbarhed
+static_entropies <- replicate(n_simulations, calc_mean_bayesian_entropy(generate_static(N_trials)))
+dynamic_entropies <- replicate(n_simulations, calc_mean_bayesian_entropy(generate_dynamic(N_trials)))
+
+# --- 5. Forbered Data og Beregn Statistik ---
+sim_data <- tibble(
+  Entropy = c(static_entropies, dynamic_entropies),
+  Block_Type = factor(rep(c("Static", "Dynamic"), each = n_simulations))
+)
+
+mean_static <- mean(static_entropies)
+sd_static <- sd(static_entropies)
+mean_dynamic <- mean(dynamic_entropies)
+sd_dynamic <- sd(dynamic_entropies)
+
+# --- Beregn 95% Kvantil-intervaller ---
+ci_static <- quantile(static_entropies, probs = c(0.025, 0.975))
+ci_dynamic <- quantile(dynamic_entropies, probs = c(0.025, 0.975))
+
+print("--- 95% INTERVALLER (Kvantiler) ---")
+cat("Static 95% CI: [", ci_static[1], "; ", ci_static[2], "]\n")
+cat("Dynamic 95% CI: [", ci_dynamic[1], "; ", ci_dynamic[2], "]\n")
+
+```
+
+
+
+```{r}
+# ==============================================================================
+# ANALYSE AF ENTROPI: STIMULUS VS. RESPONS (STATISK VS. DYNAMISK)
+# ==============================================================================
+
+# 1. Funktion til at beregne statisk (global) Shannon Entropi
+# Denne funktion udregner entropien af en hel blok (eller sekvens) i bits.
+calc_global_entropy <- function(x) {
+  # Fjern NA-værdier
+  x <- x[!is.na(x)]
+  if(length(x) == 0) return(NA)
+  
+  # Beregn sandsynligheder for hver unik hændelse
+  p <- table(x) / length(x)
+  p <- p[p > 0] # Fjern 0-sandsynligheder (undgår log2(0) = -Inf)
+  
+  # Returner Shannon entropien i bits (-sum(p * log2(p)))
+  return(-sum(p * log2(p)))
+}
+
+# 2. Beregn entropi pr. blok, pr. deltager
+# Her kigger vi på, hvor uforudsigelig selve stimulus-strømmen (binary_state) var
+# vs. hvor uforudsigelige forsøgspersonens faktiske tryk (response) var.
+entropy_comparison <- df_clean %>%
+  mutate(
+    # Binariser stimulus: 0 for Standard, 1 for Deviant
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1),
+    block_type = factor(block_type, levels = c("Static", "Dynamic"))
+  ) %>%
+  # Gruppér for hver specifik blok
+  group_by(participant_id, block_num, block_type) %>%
+  summarise(
+    # Udregn den faktiske stimulus-entropi i denne blok
+    stim_entropy = calc_global_entropy(binary_state),
+    # Udregn entropien i deltagernes egne gæt
+    resp_entropy = calc_global_entropy(response),
+    .groups = "drop"
+  )
+
+# 3. Beregn Gennemsnit (Mean) og Spredning (SD) på tværs af deltagerne
+summary_entropy_stats <- entropy_comparison %>%
+  group_by(block_type) %>%
+  summarise(
+    mean_stim_entropy = mean(stim_entropy, na.rm = TRUE),
+    sd_stim_entropy = sd(stim_entropy, na.rm = TRUE),
+    
+    mean_resp_entropy = mean(resp_entropy, na.rm = TRUE),
+    sd_resp_entropy = sd(resp_entropy, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print("--- GENNEMSNITLIG ENTROPI (BITS) ---")
+print(summary_entropy_stats)
+
+# ==============================================================================
+# STATISTISK TEST (ANOVA)
+# ==============================================================================
+
+# 4. Omstrukturering af data til "Long format" for at kunne lave et samlet plot og test
+entropy_long <- entropy_comparison %>%
+  pivot_longer(
+    cols = c(stim_entropy, resp_entropy),
+    names_to = "entropy_source",
+    values_to = "entropy_value"
+  ) %>%
+  mutate(
+    entropy_source = factor(ifelse(entropy_source == "stim_entropy", "Stimulus (Reality)", "Response (Prediction)"))
+  )
+
+# 5. Two-Way Mixed ANOVA
+# Vi tester: Er der en interaktion mellem, om vi kigger på stimulus/respons, og om blokken er statisk/dynamisk?
+# Vi inkluderer (1|participant_id) for at tage højde for, at samme person har lavet flere blokke.
+print("--- ANOVA: EFFEKT AF KILDE (STIM/RESP) OG BLOKTYPE (STAT/DYN) ---")
+model_entropy <- aov(entropy_value ~ block_type * entropy_source + Error(participant_id/(block_type*entropy_source)), data = entropy_long)
+summary(model_entropy)
+
+# 6. Parvise t-tests (Hvor præcist er der en signifikant forskel?)
+# Test A: Er respons-entropien forskellig fra stimulus-entropien i Statisk?
+# Test B: Er respons-entropien forskellig fra stimulus-entropien i Dynamisk?
+# Test C: Er stimulus-entropien forskellig mellem Statisk og Dynamisk? (Burde være nej, hvis I har designet det pænt)
+
+# ==============================================================================
+# VISUALISERING MED SIGNIFIKANS-BRACKETS
+# ==============================================================================
+
+ggplot(entropy_long, aes(x = entropy_source, y = entropy_value, fill = block_type)) +
+  # Violin plot for at vise fordelingen + et indlejret boxplot for spredningen
+  geom_violin(alpha = 0.5, trim = FALSE, position = position_dodge(0.8)) +
+  geom_boxplot(width = 0.2, position = position_dodge(0.8), color = "black", alpha = 0.7, outlier.shape = NA) +
+  
+  # Farver og akser
+  scale_fill_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  scale_y_continuous(limits = c(0, max(entropy_long$entropy_value, na.rm = TRUE) * 1.2)) +
+  
+  # Engelske tekster til rapporten
+  labs(
+    title = "Entropy Analysis: Objective Reality vs. Subjective Prediction",
+    subtitle = "Comparing Shannon entropy (in bits) across sequence types",
+    x = "Source of Entropy",
+    y = "Average Entropy (Bits)",
+    fill = "Sequence Logic"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom"
+  ) +
+  
+  # 7. Tilføj statistiske sammenligninger på plottet
+  # Her tester den automatisk den Røde (Dynamic) vs. den Blå (Static) søjle inden for hver kategori
+  stat_compare_means(aes(group = block_type), label = "p.format", method = "t.test", label.y = max(entropy_long$entropy_value, na.rm = TRUE) * 1.05)
+```
+
+```{r}
+# ==========================================
+# ANALYSE AF NØJAGTIGHED: KONTEKST & BLOK-TYPE
+# ==========================================
+library(tidyverse)
+
+# 1. KORREKT BINARISERING OG KATEGORISERING
+# Vi sikrer os at "ss" (standard) og "as" (deviant) genkendes korrekt
+df_analyseret <- df_clean %>%
+  mutate(
+    # 1. Binarisering (ss = 0, as = 1)
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1),
+    
+    # 2. OPRET deviant_possible først (VIGTIGT)
+    deviant_possible = case_when(
+      as.logical(toupper(av)) == TRUE ~ "Audio-Visual (AV)",
+      as.logical(toupper(sv)) == TRUE ~ "Somato-Visual (SV)",
+      as.logical(toupper(as)) == TRUE ~ "Audio-Somato (AS)",
+      TRUE                            ~ "None"
+    ),
+    
+    # 3. Nu kan du bruge deviant_possible til at definere grupperne
+    analysis_group = case_when(
+      block_num <= 12 ~ deviant_possible, 
+      block_num > 12  ~ "Mixed (SV/AS/AV)",
+      TRUE            ~ "Other"
+    ),
+    
+    is_correct = as.logical(toupper(correct))
+  ) %>%
+  filter(analysis_group != "Other")
+
+# 3. STATISTISK TEST: TWO-WAY ANOVA
+
+nøjagtighed_stats <- df_analyseret %>%
+  group_by(participant_id, analysis_group, block_type) %>%
+  summarise(
+    mean_accuracy = mean(is_correct, na.rm = TRUE),
+    .groups = "drop"
+  )
+# Vi tester om der er forskel på typerne (AS/SV/AV/Mix) og blok-typen (Statisk/Dynamisk)
+model_acc <- aov(mean_accuracy ~ analysis_group * block_type, data = nøjagtighed_stats)
+
+print("--- ANOVA RESULTATER FOR NØJAGTIGHED ---")
+print(summary(model_acc))
+
+# 4. VISUALISERING: BAR-CHART OVER PRÆSTATION
+ggplot(nøjagtighed_stats, aes(x = analysis_group, y = mean_accuracy, fill = block_type)) +
+  stat_summary(fun = mean, geom = "bar", position = "dodge", alpha = 0.8) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", position = position_dodge(0.9), width = 0.2) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  scale_fill_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  labs(
+    title = "Nøjagtighed pr. Stimuli-kontekst",
+    subtitle = "Sammenligning af Statiske vs. Dynamiske trials på tværs af deviant-typer",
+    x = "Kontekst / Deviant Type",
+    y = "Gennemsnitlig Accuracy (%)",
+    fill = "Blok Type"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# ==========================================
+# REGRESSION: ENTROPI VS. NØJAGTIGHED (RETTET)
+# ==========================================
+
+# Vi skaber regression_data og sikrer at 'correct_logical' findes
+regression_data <- df_clean %>%
+  mutate(
+    # Sikr korrekt binarisering (ss=0, as=1)
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1),
+    # Opret den logiske kolonne til gennemsnitsberegning
+    correct_logical = as.logical(toupper(correct))
+  ) %>%
+  group_by(participant_id, block_num, block_type) %>%
+  summarise(
+    block_entropy = calc_entropy(binary_state),
+    accuracy = mean(correct_logical, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Nu køres plottet med alle tre regressionslinjer
+ggplot(regression_data, aes(x = block_entropy, y = accuracy)) +
+  geom_point(aes(color = block_type), alpha = 0.5) +
+  # Linjer for Statisk og Dynamisk
+  geom_smooth(aes(color = block_type, fill = block_type), 
+              method = "lm", alpha = 0.2) +
+  # Den samlede linje for ALT data (sort stiplet)
+  geom_smooth(method = "lm", color = "black", linetype = "dashed", 
+              se = FALSE, size = 1) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  scale_color_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  labs(
+    title = "Sammenhæng mellem Entropi og Nøjagtighed",
+    x = "Binær Stimulus Entropi (Bits)",
+    y = "Accuracy (%)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# ==========================================
+# STATISTISK TEST AF REGRESSIONSLINJER
+# ==========================================
+
+# 1. Samlet regression (Den sorte stiplede linje)
+model_total <- lm(accuracy ~ block_entropy, data = regression_data)
+print("--- SAMLET REGRESSION (ALLE TRIALS) ---")
+summary(model_total)
+
+# 2. Regression opdelt på Blok-type (De farvede linjer)
+# Vi bruger en interaktionsmodel for at se om hældningerne er forskellige
+model_split <- lm(accuracy ~ block_entropy * block_type, data = regression_data)
+print("--- REGRESSION OPDELT PÅ BLOK-TYPE ---")
+summary(model_split)
+
+# install.packages("ggpubr") # Kør hvis du ikke har den
+library(ggpubr)
+
+ggplot(regression_data, aes(x = block_entropy, y = accuracy, color = block_type)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = TRUE) +
+  # Tilføjer korrelationskoefficient (R) og p-værdi direkte i plottet
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), 
+           label.x = 0.1, method = "pearson") +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  labs(title = "Signifikans af hældning: Entropi vs. Accuracy") +
+  theme_minimal()
+```
+```{r}
+# ==========================================
+# FACETTERET REGRESSION MED SIGNIFIKANS
+# ==========================================
+library(tidyverse)
+library(ggpubr) # Bruges til stat_cor
+
+# 1. Forbered data (Sikr binarisering og gruppering)
+regression_stats <- df_clean %>%
+  mutate(
+    # Binarisering (ss = 0, as = 1)
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1),
+    correct_logical = as.logical(toupper(correct)),
+    
+    # Kategorisering af deviants
+    deviant_type = case_when(
+      as.logical(toupper(av)) == TRUE ~ "AV",
+      as.logical(toupper(sv)) == TRUE ~ "SV",
+      as.logical(toupper(as)) == TRUE ~ "AS",
+      TRUE                            ~ "None"
+    ),
+    analysis_group = case_when(
+      block_num <= 12 ~ deviant_type,
+      block_num > 12  ~ "Mixed",
+      TRUE            ~ "Other"
+    )
+  ) %>%
+  filter(analysis_group %in% c("AS", "SV", "AV", "Mixed")) %>%
+  group_by(participant_id, block_num, block_type, analysis_group) %>%
+  summarise(
+    block_entropy = calc_entropy(binary_state),
+    accuracy = mean(correct_logical, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 2. Plot med signifikansniveauer
+ggplot(regression_stats, aes(x = block_entropy, y = accuracy, color = block_type)) +
+  geom_point(alpha = 0.3) +
+  
+  # Regressionslinjer pr. blok-type
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.1) +
+  
+  # TILFØJ STATISTIK: Viser R^2 og p-værdi for hver linje i hver facet
+  stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), 
+           label.x.npc = "left", label.y.npc = "bottom", size = 3) +
+  
+  # Facettering
+  facet_wrap(~analysis_group, ncol = 2) +
+  
+  # Formatering
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  scale_color_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  labs(
+    title = "Regression og Signifikans pr. Deviant-kontekst",
+    subtitle = "Viser om entropiens effekt er statistisk signifikant (p < 0.05)",
+    x = "Binær Stimulus Entropi (Bits)",
+    y = "Accuracy (%)",
+    color = "Blok Type"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+```{r}
+# ==========================================
+# BEREGNING AF MEDIAN ENTROPI
+# ==========================================
+
+# 1. Beregn først entropien pr. blok (hvis ikke allerede gjort)
+median_entropy_stats <- df_clean %>%
+  mutate(
+    # Sikr korrekt binarisering (ss=0, as=1)
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1)
+  ) %>%
+  group_by(participant_id, block_num, block_type) %>%
+  summarise(
+    # Beregn Shannon entropi for hver enkelt blok
+    block_entropy = calc_entropy(binary_state), 
+    .groups = "drop"
+  ) %>%
+  # 2. Beregn medianen og spredningen (IQR) for hver blok-type
+  group_by(block_type) %>%
+  summarise(
+    median_entropy = median(block_entropy, na.rm = TRUE),
+    iqr_entropy    = IQR(block_entropy, na.rm = TRUE),
+    mean_entropy   = mean(block_entropy, na.rm = TRUE),
+    n_blocks       = n(),
+    .groups = "drop"
+  )
+
+# Vis resultatet
+print("--- MEDIAN ENTROPI: STATISK VS DYNAMISK ---")
+print(median_entropy_stats)
+```
+```{r}
+# ==========================================
+# ANALYSE AF SEKVENSLÆNGDER (TÆRSKEL 0.85)
+# ==========================================
+
+# 1. Definer tærskel og beregn lokal entropi
+threshold_val <- 0.85
+
+kæde_data <- df_clean %>%
+  mutate(
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1)
+  ) %>%
+  group_by(participant_id, block_num, block_type) %>%
+  arrange(trial, .by_group = TRUE) %>%
+  mutate(
+    local_entropy = calc_running_entropy(binary_state),
+    is_above = local_entropy > threshold_val
+  ) %>%
+  # 2. Udtræk alle sekvenslængder (runs) pr. blok
+  do({
+    runs <- rle(na.omit(.$is_above))
+    data.frame(
+      længde = runs$lengths,
+      status = ifelse(runs$values, "Over 0.85 (Ustabil)", "Under 0.85 (Stabil)")
+    )
+  }) %>%
+  ungroup()
+
+# 3. Beregn overblik (Median og gennemsnitlig længde)
+sekvens_resumé <- kæde_data %>%
+  group_by(block_type, status) %>%
+  summarise(
+    Gns_Længde = mean(længde),
+    Median_Længde = median(længde),
+    Max_Længde = max(længde),
+    Antal_Sekvenser = n(),
+    .groups = "drop"
+  )
+
+print(sekvens_resumé)
+
+# 4. Visualisering: Fordeling af sekvenslængder
+ggplot(kæde_data, aes(x = længde, fill = status)) +
+  geom_histogram(binwidth = 1, position = "dodge", alpha = 0.7) +
+  facet_wrap(~block_type) +
+  scale_fill_manual(values = c("Over 0.85 (Ustabil)" = "#EA4335", 
+                               "Under 0.85 (Stabil)" = "#4285F4")) +
+  labs(
+    title = "Fordeling af sekvenslængder (Entropiske kæder)",
+    subtitle = "Hvor mange trials i træk er entropien stabil over/under 0.85 bit?",
+    x = "Sekvenslængde (Antal trials)",
+    y = "Antal forekomster",
+    fill = "Entropi Status"
+  ) +
+  theme_minimal()
+```
+```{r}
+# ==========================================
+# PLOT: SEKVENSLÆNGDE VS. KORREKTHED (TÆRSKEL 0.85)
+# ==========================================
+
+threshold_val <- 0.85
+
+# 1. Udtræk sekvenser med deres tilhørende korrekthed
+sekvens_performance <- df_clean %>%
+  mutate(
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1),
+    correct_logical = as.logical(toupper(correct))
+  ) %>%
+  group_by(participant_id, block_num, block_type) %>%
+  arrange(trial, .by_group = TRUE) %>%
+  mutate(
+    local_entropy = calc_running_entropy(binary_state),
+    is_above = local_entropy > threshold_val,
+    # Skab et unikt ID for hver sammenhængende sekvens (run)
+    run_id = with(rle(is_above), rep(seq_along(values), lengths))
+  ) %>%
+  # 2. Beregn længde og korrekthed pr. sekvens
+  group_by(participant_id, block_num, block_type, run_id, is_above) %>%
+  summarise(
+    længde = n(),
+    avg_acc = mean(correct_logical, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  # 3. Transformér x-aksen: Under 0.85 bliver negativ, Over bliver positiv
+  mutate(
+    plot_x = ifelse(is_above, længde, -længde),
+    status = ifelse(is_above, "Over 0.85 (Ustabil)", "Under 0.85 (Stabil)")
+  )
+
+# 4. Visualisering
+ggplot(sekvens_performance, aes(x = plot_x, y = avg_acc, color = block_type)) +
+  geom_point(alpha = 0.3) +
+  # Tilføj en regressionslinje eller glidende gennemsnit for at se tendensen
+  geom_smooth(method = "loess", se = TRUE) +
+  # Linje ved x=0 for at adskille de to typer sekvenser
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  scale_color_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  labs(
+    title = "Effekt af sekvensvarighed på korrekthed",
+    subtitle = "Negative værdier = Stabil fase (<0.85 bit). Positive = Ustabil fase (>0.85 bit).",
+    x = "Sekvenslængde (Trials i træk)",
+    y = "Gennemsnitlig Korrekthed (%)",
+    color = "Blok Type"
+  ) +
+  theme_minimal()
+```
+```{r}
+# ==========================================
+# AREAL-ANALYSE: KUMULATIV ENTROPI VS. ACCURACY
+# ==========================================
+
+threshold_val <- 0.85
+
+# 1. Beregn arealer pr. sekvens
+areal_performance <- df_clean %>%
+  mutate(
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1),
+    correct_logical = as.logical(toupper(correct))
+  ) %>%
+  group_by(participant_id, block_num, block_type) %>%
+  arrange(trial, .by_group = TRUE) %>%
+  mutate(
+    local_entropy = calc_running_entropy(binary_state),
+    is_above = local_entropy > threshold_val,
+    # Identificer de sammenhængende sekvenser (runs)
+    run_id = with(rle(is_above), rep(seq_along(values), lengths))
+  ) %>%
+  # 2. Beregn arealet for hver sekvens
+  group_by(participant_id, block_num, block_type, run_id, is_above) %>%
+  summarise(
+    # Arealet er summen af afvigelsen fra tærsklen
+    sekvens_areal = sum(abs(local_entropy - threshold_val), na.rm = TRUE),
+    avg_acc = mean(correct_logical, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  # 3. Transformér x-aksen (Stabil = Negativt areal, Ustabil = Positivt areal)
+  mutate(
+    plot_x = ifelse(is_above, sekvens_areal, -sekvens_areal),
+    status = ifelse(is_above, "Over 0.85 (Ustabil)", "Under 0.85 (Stabil)")
+  )
+
+# 4. Visualisering
+ggplot(areal_performance, aes(x = plot_x, y = avg_acc, color = block_type)) +
+  geom_point(alpha = 0.4, size = 2) +
+  # Loess-linje for at fange den ikke-lineære tendens
+  geom_smooth(method = "loess", se = TRUE, size = 1.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  scale_color_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  labs(
+    title = "Korrekthed som funktion af Entropisk Areal",
+    subtitle = "Areal = Summen af (Entropi - 0.85). Til venstre: Stabile faser. Til højre: Ustabile faser.",
+    x = "Kumulativt Areal (Afvigelse fra 0.85 tærskel)",
+    y = "Gennemsnitlig Accuracy (%)",
+    color = "Blok Type"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+library(ggpubr)
+
+ggplot(areal_performance, aes(x = plot_x, y = avg_acc, color = block_type)) +
+  geom_point(alpha = 0.3, size = 1.5) +
+  
+  # Lineære regressionslinjer opdelt ved x = 0
+  geom_smooth(aes(group = interaction(block_type, plot_x > 0)), 
+              method = "lm", 
+              se = TRUE, 
+              size = 1.2) +
+  
+  # Tilføj R og P værdier
+  # stat_cor splitter automatisk på farve (block_type) og gruppe (siderne)
+  stat_cor(aes(group = interaction(block_type, plot_x > 0)),
+           method = "pearson", 
+           label.x.npc = "center", # Forsøger at samle dem omkring midten
+           size = 3.5,
+           show.legend = FALSE) +
+  
+  # Nul-linje
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  
+  # Formatering
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1.1)) + # Plads til tekst i toppen
+  scale_color_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  labs(
+    title = "Lineær Regression med Signifikans",
+    subtitle = "Viser korrelation (R) og p-værdi for stabile vs. ustabile faser",
+    x = "Kumulativt Areal (Stabil < 0 > Ustabil)",
+    y = "Gennemsnitlig Accuracy (%)",
+    color = "Blok Type"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# ========================================================
+# STATISTISK ANALYSE: STABIL VS. USTABIL (PIECEWISE)
+# ========================================================
+
+# Del data op i to grupper
+data_venstre <- areal_performance %>% filter(plot_x <= 0)
+data_hoejre  <- areal_performance %>% filter(plot_x > 0)
+
+# --- TEST 1: Venstre side (Stabile sekvenser) ---
+model_venstre <- lm(avg_acc ~ block_type * plot_x, data = data_venstre)
+summary(model_venstre)
+
+# --- TEST 2: Højre side (Ustabile sekvenser) ---
+model_hoejre <- lm(avg_acc ~ block_type * plot_x, data = data_hoejre)
+summary(model_hoejre)
+
+# --- TEST 3: Er Højre side forskellig fra Venstre side? ---
+# Her tester vi den overordnede effekt af 'status' (Over vs Under 0.85)
+model_total_split <- aov(avg_acc ~ status * block_type, data = areal_performance)
+summary(model_total_split)
+```
+
+```{r}
+# ========================================================
+# LINEÆR REGRESSION: STANDARD VS. DEVIANT PERFORMANCE
+# ========================================================
+areal_performance_split <- df_clean %>%
+  mutate(
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1),
+    correct_logical = as.logical(toupper(correct)),
+    trial_category = ifelse(str_trim(state) == "ss", "Standard Trials", "Deviant Trials")
+  ) %>%
+  group_by(participant_id, block_num, block_type) %>%
+  arrange(trial, .by_group = TRUE) %>%
+  mutate(
+    local_entropy = calc_running_entropy(binary_state),
+    is_above = local_entropy > threshold_val,
+    run_id = with(rle(is_above), rep(seq_along(values), lengths))
+  ) %>%
+  group_by(participant_id, block_num, block_type, run_id, is_above, trial_category) %>%
+  summarise(
+    sekvens_areal = sum(abs(local_entropy - threshold_val), na.rm = TRUE),
+    avg_acc = mean(correct_logical, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    plot_x = ifelse(is_above, sekvens_areal, -sekvens_areal)
+  )
+
+ggplot(areal_performance_split, aes(x = plot_x, y = avg_acc, color = block_type)) +
+  geom_point(alpha = 0.2, size = 1.2) +
+  geom_smooth(aes(group = interaction(block_type, plot_x > 0)), method = "lm", se = TRUE, size = 1.1) +
+  stat_cor(aes(group = interaction(block_type, plot_x > 0)), method = "pearson", label.x.npc = "center", size = 3, show.legend = FALSE) +
+  facet_wrap(~trial_category) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1.1)) +
+  scale_color_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  labs(
+    title = "Lineær Regression: Standard vs. Deviant Performance",
+    subtitle = "Effekt af entropisk areal på hit-rate (Deviants) og korrekt afvisning (Standards)",
+    x = "Kumulativt Areal (Stabil < 0 > Ustabil)",
+    y = "Gennemsnitlig Accuracy (%)",
+    color = "Blok Type"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
+
+```{r}
+# ==========================================
+# FACETTERET AREAL-ANALYSE: AS, SV, AV & MIXED
+# ==========================================
+
+threshold_val <- 0.85
+
+# 1. Forbered data med kategorier og arealer
+areal_faceted_data <- df_clean %>%
+  mutate(
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1),
+    correct_logical = as.logical(toupper(correct)),
+    
+    # Definer deviant-typerne
+    deviant_type = case_when(
+      as.logical(toupper(av)) == TRUE ~ "AV",
+      as.logical(toupper(sv)) == TRUE ~ "SV",
+      as.logical(toupper(as)) == TRUE ~ "AS",
+      TRUE                            ~ "None"
+    ),
+    
+    # Skab analyse-grupperne
+    analysis_group = case_when(
+      block_num <= 12 ~ deviant_type,
+      block_num > 12  ~ "Mixed",
+      TRUE            ~ "Other"
+    )
+  ) %>%
+  filter(analysis_group %in% c("AS", "SV", "AV", "Mixed")) %>%
+  group_by(participant_id, block_num, block_type) %>%
+  arrange(trial, .by_group = TRUE) %>%
+  mutate(
+    local_entropy = calc_running_entropy(binary_state),
+    is_above = local_entropy > threshold_val,
+    run_id = with(rle(is_above), rep(seq_along(values), lengths))
+  ) %>%
+  # 2. Beregn arealet pr. sekvens pr. kontekst
+  group_by(participant_id, block_num, block_type, analysis_group, run_id, is_above) %>%
+  summarise(
+    sekvens_areal = sum(abs(local_entropy - threshold_val), na.rm = TRUE),
+    avg_acc = mean(correct_logical, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    plot_x = ifelse(is_above, sekvens_areal, -sekvens_areal)
+  )
+
+# 3. Visualisering med facets
+ggplot(areal_faceted_data, aes(x = plot_x, y = avg_acc, color = block_type)) +
+  geom_point(alpha = 0.3, size = 1.5) +
+  geom_smooth(method = "loess", se = TRUE, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  # Opdel i fire grafer
+  facet_wrap(~analysis_group, ncol = 2) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  scale_color_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  labs(
+    title = "Korrekthed vs. Entropisk Areal pr. Kontekst",
+    subtitle = "Negativt areal = Stabilitet (<0.85). Positivt areal = Usikkerhed (>0.85).",
+    x = "Kumulativt Areal (Sum af afvigelse fra 0.85)",
+    y = "Accuracy (%)",
+    color = "Blok Type"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
+```{r}
+# ==========================================
+# HISTOGRAM: SEKVENSER PR. ENTROPI-BIN (0.05)
+# ==========================================
+
+# 1. Forbered data og beregn løbende entropi
+histogram_data <- df_clean %>%
+  mutate(
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1)
+  ) %>%
+  group_by(participant_id, block_num, block_type) %>%
+  arrange(trial, .by_group = TRUE) %>%
+  mutate(
+    local_entropy = calc_running_entropy(binary_state),
+    # Vi skaber bins med trin på 0.05
+    # floor(x/0.05)*0.05 placerer entropien i den korrekte 'skuffe'
+    entropy_bin = floor(local_entropy / 0.05) * 0.05
+  ) %>%
+  # 2. Identificer sekvenser (kæder) der bliver i samme bin
+  do({
+    # Vi fjerner NA (typisk de første trials i en blok)
+    clean_bins <- na.omit(.$entropy_bin)
+    if(length(clean_bins) == 0) return(data.frame())
+    
+    runs <- rle(clean_bins)
+    data.frame(
+      bin = runs$values,
+      længde = runs$lengths
+    )
+  }) %>%
+  ungroup()
+
+# 3. Visualisering: Antallet af sekvenser pr. interval
+ggplot(histogram_data, aes(x = bin, fill = block_type)) +
+  # Vi bruger geom_histogram med binwidth 0.05 og starter ved 0
+  geom_histogram(binwidth = 0.05, boundary = 0, position = "dodge", alpha = 0.7) +
+  scale_x_continuous(breaks = seq(0, 1, 0.1), limits = c(0, 1.05)) +
+  scale_fill_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  labs(
+    title = "Histogram over Entropiske Sekvenser",
+    subtitle = "Antallet af sammenhængende kæder i 0.05 bins",
+    x = "Entropi Niveau (0.00 til 1.00 bits)",
+    y = "Antal observerede sekvenser (Frekvens)",
+    fill = "Blok Type"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# ==========================================
+# VÆGTET HISTOGRAM: TOTALT ANTAL TRIALS PR. BIN
+# ==========================================
+
+# 1. Beregn sekvenser og deres vægt (Antal * Gns Længde = Sum af længder)
+weighted_hist_data <- df_clean %>%
+  mutate(
+    binary_state = ifelse(str_trim(state) == "ss", 0, 1)
+  ) %>%
+  group_by(participant_id, block_num, block_type) %>%
+  arrange(trial, .by_group = TRUE) %>%
+  mutate(
+    local_entropy = calc_running_entropy(binary_state),
+    entropy_bin = floor(local_entropy / 0.05) * 0.05
+  ) %>%
+  # Vi fjerner NA og grupperer for at finde den samlede tid i hver bin
+  filter(!is.na(entropy_bin)) %>%
+  group_by(block_type, entropy_bin) %>%
+  summarise(
+    # Summen af alle trials i denne bin på tværs af alle sekvenser
+    total_trials_in_bin = n(), 
+    .groups = "drop"
+  )
+
+# 2. Visualisering
+ggplot(weighted_hist_data, aes(x = entropy_bin, y = total_trials_in_bin, fill = block_type)) +
+  # Vi bruger geom_col i stedet for geom_histogram, da vi selv har beregnet y-værdien
+  geom_col(position = "dodge", alpha = 0.7, width = 0.045) +
+  scale_x_continuous(breaks = seq(0, 1, 0.1), limits = c(-0.02, 1.02)) +
+  scale_fill_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  labs(
+    title = "Vægtet Entropi-profil: Total tid pr. usikkerhedsniveau",
+    subtitle = "Y-akse = Totalt antal trials tilbragt i hver entropi-bin (Antal sekvenser × Gns. længde)",
+    x = "Entropi Niveau (0.00 til 1.00 bits)",
+    y = "Samlet antal trials",
+    fill = "Blok Type"
+  ) +
+  theme_minimal()
+```
+```{r}
+# ==========================================
+# ANALYSE AF STANDARD VS. DEVIANT ACCURACY
+# ==========================================
+
+# 1. Præparering af data
+trial_type_analysis <- df_clean %>%
+  mutate(
+    # Definer om trial er Standard eller Deviant
+    trial_category = ifelse(str_trim(state) == "ss", "Standard", "Deviant"),
+    correct_logical = as.logical(toupper(correct)),
+    block_type = factor(block_type, levels = c("Static", "Dynamic"))
+  ) %>%
+  # Gruppér for at få gennemsnit pr. deltager pr. kategori
+  group_by(participant_id, block_type, trial_category) %>%
+  summarise(
+    mean_acc = mean(correct_logical, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  )
+
+# 2. Deskriptiv statistik (Tabel-oversigt)
+summary_stats <- trial_type_analysis %>%
+  group_by(block_type, trial_category) %>%
+  summarise(
+    avg_performance = mean(mean_acc),
+    sd_performance = sd(mean_acc),
+    .groups = "drop"
+  )
+
+print(summary_stats)
+
+# 3. Visualisering: Barplot med fejl-barer
+ggplot(trial_type_analysis, aes(x = trial_category, y = mean_acc, fill = block_type)) +
+  stat_summary(fun = mean, geom = "bar", position = position_dodge(0.9), alpha = 0.8) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", position = position_dodge(0.9), width = 0.2) +
+  scale_fill_manual(values = c("Static" = "#4285F4", "Dynamic" = "#EA4335")) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  labs(
+    title = "Korrekthed: Standard vs. Deviant Trials",
+    subtitle = "Opdelt på Statiske og Dynamiske blokke (Mean +/- SE)",
+    x = "Trial Kategori",
+    y = "Accuracy (%)",
+    fill = "Blok Type"
+  ) +
+  theme_minimal()
+
+# 4. Statistisk test: Two-way ANOVA
+# Tester om bloktype og trial-type påvirker hinanden (interaktion)
+anova_res <- aov(mean_acc ~ block_type * trial_category, data = trial_type_analysis)
+summary(anova_res)
+```
+```{r}
+# ==============================================================================
+# FACETTERET PLOT MED PARVISE SIGNIFIKANS-SAMMENLIGNINGER (ENGELSK)
+# ==============================================================================
+
+# 1. Definer de parvise sammenligninger, du vil teste internt i hver facet (Standard vs Deviant)
+# Da x-aksen er 'trial_category', sammenligner vi 'Standard' vs 'Deviant'
+within_facet_comparisons <- list( c("Standard", "Deviant") )
+
+# For at lave sammenligninger på tværs af de farvede søjler (Static vs Dynamic) 
+# inden for hver trial-type, genererer vi en kombineret variabel til plottet
+plot_data_significance <- trial_type_analysis_four_blocks %>%
+  mutate(
+    # Sikrer engelske navne på x-aksen og i sdt-kategorierne
+    trial_category = factor(trial_category, levels = c("Standard", "Deviant")),
+    block_type = factor(block_type, levels = c("Dynamic", "Static")),
+    # Kombineret gruppe til de avancerede tests på tværs af farver
+    comb_group = interaction(trial_category, block_type)
+  )
+
+# 2. Generering af det engelske plot med statistiske sammenligninger
+ggplot(plot_data_significance, aes(x = trial_category, y = mean_acc, fill = block_type)) +
+  # Søjler med fejl-barer (Mean +/- SE)
+  stat_summary(fun = mean, geom = "bar", position = position_dodge(0.9), alpha = 0.8) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", position = position_dodge(0.9), width = 0.2) +
+  
+  # Facettering efter de 4 kontekster
+  facet_wrap(~deviant_context) +
+  
+  # FARVESKEMA (Dine præcise farver udtrukket fra billederne)
+  scale_fill_manual(values = c("Static" = "blue", "Dynamic" = "red")) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1.15)) + 
+  
+  # ENGELSKE TEKSTER
+  labs(
+    title = "Accuracy Analysis: Standard vs. Deviant Trials Across Contexts",
+    subtitle = "Pairwise comparisons of sequence type (Static vs. Dynamic) and trial types (Standard vs Deviant)",
+    x = "Trial Category",
+    y = "Response Accuracy (%)",
+    fill = "Sequence type"
+  ) +
+  
+  # AKADEMISK THEME
+  theme_minimal(base_size = 11) + # Minimal definerer gitterlinjer...
+  theme(
+    # ...og her fjerner vi dem fuldstændigt:
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    
+    panel.spacing = unit(1.5, "lines"),
+    strip.text = element_text(face = "bold", size = 11),
+    plot.title = element_text(face = "bold", size = 13),
+    legend.position = "bottom"
+  ) +
+  
+  # STATISTISKE COMPARISONS
+  stat_compare_means(aes(group = block_type), label = "p.format", method = "t.test", hide.ns = FALSE, label.y = 1.02)
+```
+
+```{r}
+# ==============================================================================
+# BAYESIAN ANALYSIS: BLOCK TYPE × TRIAL CATEGORY × CONTEXT
+# ==============================================================================
+# Installer brms og tidybayes hvis du ikke har dem:
+# install.packages("brms")
+# install.packages("tidybayes")
+# install.packages("emmeans")
+
+
+library(brms)
+library(tidybayes)
+library(emmeans)
+
+
+# 1. Tilpas den Bayesianske logistiske mixed-effects model
+# Vi bruger her dit oprindelige trial-level data (df_clean), 
+# da en binomial model fungerer bedst på de rå binære svar (0 og 1)
+bayes_data <- df_clean %>%
+  mutate(
+    # Genberegn de nødvendige variable på trial-level
+    correct_logical = as.integer(as.logical(toupper(correct))),
+    trial_category = factor(ifelse(str_trim(state) == "ss", "Standard", "Deviant")),
+    block_type = factor(block_type, levels = c("Static", "Dynamic"))
+  ) %>%
+  # Find kontekst pr. blok
+  group_by(participant_id, block_num, block_type) %>%
+  mutate(
+    unique_deviants = list(unique(str_trim(state[state != "ss"]))),
+    deviant_context = case_when(
+      all(c("as", "sv", "av") %in% unlist(unique_deviants)) ~ "Mixed",
+      "as" %in% unlist(unique_deviants) ~ "AS",   # RETTET HER (%in%)
+      "sv" %in% unlist(unique_deviants) ~ "SV",   # RETTET HER (%in%)
+      "av" %in% unlist(unique_deviants) ~ "AV",   # RETTET HER (%in%)
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  ungroup() %>%
+  filter(deviant_context != "Unknown")
+
+# Kør Bayes-modellen (Bemærk: Dette kan tage et par minutter at fitte)
+bayes_model <- brm(
+  formula = correct_logical ~ block_type * trial_category * deviant_context + (1 | participant_id),
+  data = bayes_data,
+  family = bernoulli(link = "logit"),
+  prior = c(
+    prior(normal(0, 1.5), class = "b"),       # Svagt informative priors for effekter
+    prior(student_t(3, 0, 2.5), class = "sd") # Prior for random effects spredning
+  ),
+  chains = 4, iter = 2000, warmup = 1000, cores = 4,
+  seed = 1234,
+  file = "bayes_model_accuracy" # Gemmer modellen, så den ikke skal fittes hver gang
+)
+
+# Vis modeloverblik (Tjek Rhat-værdier; de skal være tæt på 1.00 for konvergens)
+summary(bayes_model)
+
+# ==============================================================================
+# 2. UDTRÆK AF POSTERIOR CONTRASTS (DYNAMIC VS STATIC)
+# ==============================================================================
+
+# Vi bruger emmeans til at trække de specifikke kontraster ud på sandsynlighedsskalaen (back-transformed)
+grid_bayes <- emmeans(bayes_model, ~ block_type | trial_category * deviant_context, type = "response")
+
+# Beregn forskellene: Dynamic minus Static inden for hver trial_category og context
+contrasts_bayes <- pairs(grid_bayes, reverse = TRUE)
+
+print("--- POSTERIOR CONTRASTS (DYNAMIC VS STATIC DIFFERENCES) ---")
+print(summary(contrasts_bayes, credible_interval = 0.95))
+
+# ==============================================================================
+# 3. VISUALISERING AF POSTERIOR FORDELINGER FOR EFFEKTERNE
+# ==============================================================================
+# Her plotter vi sandsynlighedsfordelingen for forskellen (Dynamic - Static)
+# Hvis fordelingen ikke overlapper 0, er der en klar Bayesiansk effekt.
+
+contrasts_bayes_draws <- gather_emmeans_draws(contrasts_bayes)
+
+ggplot(contrasts_bayes_draws, aes(x = .value, y = deviant_context, fill = trial_category)) +
+  stat_halfeye(alpha = 0.6, .width = c(0.89, 0.95)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  facet_wrap(~trial_category) +
+  labs(
+    title = "Posterior Distributions of the Entropy Effect (Dynamic - Static)",
+    subtitle = "Values represent change in Accuracy. Points show median; thick/thin lines show 89% and 95% HDIs.",
+    x = "Difference in Accuracy (Probability Scale)",
+    y = "Deviant Context",
+    fill = "Trial Type"
+  ) +
+  theme_minimal()
+```
+
