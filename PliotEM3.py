@@ -7,8 +7,22 @@ import random
 import csv
 from datetime import datetime
 import os
+from psychopy import serial
+
+# Define the port
+port = serial.Serial("COM3", 115200)  # address for serial port is COM4 in this example. Change to match your machine.
+
+def trigger(code):
+    port.write(code.to_bytes(1, 'big'))
+    print('trigger sent {}'.format(code))
+    
+trigger(1) # ss
+trigger(2) # av
+trigger(3) # sv
+trigger(4) # as
 
 # --- 0. START SKÆRM (DIALOG BOKS TIL ID) ---
+
 exp_info = {'Participant ID': ''}
 dlg = gui.DlgFromDict(dictionary=exp_info, sortKeys=False, title="Pilot Forsøg")
 
@@ -30,7 +44,7 @@ aud_deviant = sound.Sound(value=880, secs=0.3, sampleRate=44100)
 
 # --- 2. LOGIK TIL SEKVENSER ---
 states = ['ss', 'av', 'sv', 'as']
-n_trials_per_block = 60
+n_trials_per_block = 40
 
 def generate_static_sequence(n_trials, allowed_deviants):
     seq = []
